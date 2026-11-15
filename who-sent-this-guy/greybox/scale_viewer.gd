@@ -2,8 +2,10 @@ extends Node3D
 ## Inspection controls only. The saved scene contains the actual editable geometry.
 
 const Spec = preload("res://greybox/scale_spec.gd")
+const RouteMapPreview = preload("res://greybox/route_map_preview.gd")
+const EventPreview = preload("res://greybox/event_preview.gd")
 const VIEW_NAMES := ["装载总览", "车侧正交", "后门正交", "后舱俯视", "全场俯视", "车外眼高", "舱内眼高"]
-const LAYOUT_NAMES := ["地面对照", "六货三人", "木箱叠放", "空舱四人", "五人宽度", "六货装车"]
+const LAYOUT_NAMES := ["地面对照", "六货三人", "鸡笼叠放", "空舱四人", "三人超宽", "六货装车"]
 
 @onready var camera: Camera3D = $ViewCamera
 @onready var observer: CharacterBody3D = $Observer
@@ -36,11 +38,18 @@ var partition_button: Button
 var shell_button: Button
 var posture_button: Button
 var ui: Control
+var event_preview: Node3D
+var event_choice: OptionButton
+var event_label: Label
+var route_map: PanelContainer
 
 func _ready() -> void:
 	get_window().content_scale_mode = Window.CONTENT_SCALE_MODE_DISABLED
 	get_window().min_size = Vector2i(960, 640)
 	get_viewport().msaa_3d = Viewport.MSAA_4X
+	event_preview = EventPreview.new()
+	event_preview.name = "EventPreview"
+	add_child(event_preview)
 	_build_ui()
 	_set_door_open($Truck/Geometry/RearPortal/Door, gate_open)
 	_set_door_open($Truck/Geometry/PartitionPortal/Door, partition_open)
@@ -145,7 +154,7 @@ func _physics_process(delta: float) -> void:
 		float(Input.is_physical_key_pressed(KEY_S)) - float(Input.is_physical_key_pressed(KEY_W)))
 	var direction := Basis(Vector3.UP, look_yaw) * Vector3(movement.x, 0, movement.y).normalized()
 	var speed := 4.0
-	if eye_height < 1.1:
+	if current_view == 6 and crouched:
 		speed = 2.0
 	elif Input.is_physical_key_pressed(KEY_SHIFT):
 		speed = 6.0
@@ -177,6 +186,9 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.physical_keycode >= KEY_1 and event.physical_keycode <= KEY_7:
 			set_view(event.physical_keycode - KEY_1)
 		match event.physical_keycode:
+			KEY_N: route_map.visible = not route_map.visible
+			KEY_8: set_preview_event((event_preview.selected + 1) % EventPreview.NAMES.size())
+			KEY_9: set_preview_event(0)
 			KEY_L: set_layout((current_layout + 1) % LAYOUT_NAMES.size())
 			KEY_C: toggle_posture()
 			KEY_T: toggle_gate()
@@ -245,7 +257,7 @@ func toggle_shell() -> void:
 func _update_shell() -> void:
 	$Truck/Geometry/RoofReference.visible = not cutaway and current_view != 3
 	$Truck/Geometry/SideRight/Mesh.visible = not cutaway
-	# The five-across study needs an unobstructed rear elevation of all complete models.
+	# The over-width study needs an unobstructed rear elevation of all complete models.
 	for wall in [$Truck/Geometry/RearPortal/JambLeft/Mesh, $Truck/Geometry/RearPortal/JambRight/Mesh, $Truck/Geometry/RearPortal/Header/Mesh]:
 		wall.visible = not (cutaway and current_layout == 4)
 	shell_button.text = "O  外壳剖视  /  %s" % ("开启" if cutaway else "关闭")
@@ -320,33 +332,51 @@ func toggle_posture() -> void:
 	var title := person_b.get_node("PersonLabel") as Label3D
 	title.position.y = height + 0.3
 	title.text = "B"
-	posture_button.text = "C  人物 B  /  %s" % ("蹲姿 1.20 m" if crouched else "站姿 1.80 m")
+	posture_button.text = "C  人物 B  /  %s" % ("蹲姿 0.85 m" if crouched else "站姿 1.20 m")
 	if current_view == 6:
 		_enter_eye_view(person_b)
 	_update_status()
+
+func set_preview_event(index: int) -> void:
+	event_preview.show_event(index)
+	event_choice.select(index)
+	event_label.text = EventPreview.NOTES[index]
+	if index > 0:
+		set_layout(1)
+		set_view(0)
+		focus = Spec.TRUCK_POSITION + Vector3(0, 3.5, 0)
+		var event_camera := Vector3(15, 10, 18)
+		if index == 3:
+			focus = Spec.TRUCK_POSITION + Vector3(1, 1.8, 3.0)
+			event_camera = Vector3(10, 5, 14)
+		elif index == 5:
+			focus = Spec.TRUCK_POSITION + Vector3(0, 0.9, 0)
+			event_camera = Vector3(9, 3.5, 10)
+		camera.look_at_from_position(Spec.TRUCK_POSITION + event_camera, focus)
+		var offset := camera.position - focus
+		orbit_distance = offset.length()
+		orbit_yaw = atan2(offset.x, offset.z)
+		orbit_pitch = asin(offset.y / orbit_distance)
+		view_label.text = "事件预览 / " + EventPreview.NAMES[index]
+	else:
+		set_view(current_view)
 
 func _update_status() -> void:
 	if not is_instance_valid(status_label):
 		return
 	var text := "空舱与人物 / 六货在地面\n后舱净底面积 %.2f m²\nB 在驾驶区，可步行通过隔断门" % (Spec.BED_SIZE.x * Spec.BED_SIZE.y)
 	if current_layout == 1:
-		text = "后舱 3 人 + 6 货 / 330 kg\n货物间中间通路最窄约 2.40 m\n人物视觉宽 0.80 m / 碰撞 Ø0.60 m"
+		text = "后舱 3 人 + 6 货 / 196 kg\n中央通路最窄 1.15 m\n视觉宽0.96 m / 碰撞 Ø0.80 m"
 	elif current_layout == 2:
-		text = "后舱 3 人 + 6 货 / 330 kg\n三箱叠高 1.80 m / 离地 2.50 m\n距名义顶面 %.2f m" % (Spec.BED_CLEAR_HEIGHT - 1.8)
+		text = "两个鸡笼叠高 1.40 m\n鱼缸与炸弹保持落地\n堆放只作空间对照，非玩法许可"
 	elif current_layout == 3:
-		text = "空舱 4 人 / 六货移回地面\n静态占位与眼高步行对照\n人数是空间样本，正式支持 1～4 人"
+		text = "空舱 4 人 / 六货移回地面\n静态占位与眼高步行对照\n正式支持 1～4 人"
 	elif current_layout == 4:
-		text = "五人静态尺度样本 / 正式 1～4 人\n5 × 0.80 = 4.00 m，恰好铺满净宽\n相邻手臂及两侧舱壁相切，无横向余量\n3 后门视角 + O 剖视可看完整人物"
+		text = "三人横排超宽测试\n3 × 0.96 = 2.88 > 净宽2.70 m\n此预置故意显示0.18 m超宽，不可用布局\n3 后门视角 + O 剖视看完整轮廓"
 	elif current_layout == 5:
-		text = "六货全部装车 / 330 kg\n后舱无人，A 车外、B 驾驶区\n保留实际货物尺寸，中间通路约 2.40 m"
+		text = "六货全部装车 / 196 kg\n后舱无人，A 车外、B 驾驶区\n两侧错配装载，中央通路最窄1.15 m"
 	text += "\n隔断门 %s / 后门 %s" % ["开" if partition_open else "关", "开" if gate_open else "关"]
-	if current_view == 4:
-		var inner_lane_radius: float = Spec.TURN_CENTER_RADIUS - Spec.LANE_WIDTH / 2.0
-		var corner_radius := Vector2(inner_lane_radius + Spec.TRUCK_SIZE.x / 2.0, Spec.TRUCK_SIZE.z / 2.0).length()
-		text += "\n直路居中时单侧余宽 %.2f m\nR%.0f 弯道切向矩形最小余量约 %.2f m" % [
-			(Spec.LANE_WIDTH - Spec.TRUCK_SIZE.x) / 2.0, Spec.TURN_CENTER_RADIUS, Spec.TURN_CENTER_RADIUS - corner_radius]
-	else:
-		text += "\n隔断门与人物视觉等宽，摆臂无余量"
+	text += "\n道路总宽6 m，单道3 m与车等宽\n直道单侧余宽0，弯道需借对向空间\n关卡需设会车湾，禁止常规双车硬挤"
 	if cutaway or current_view == 3:
 		text += "\n剖视只隐藏显示，墙体碰撞保留"
 	status_label.text = text
@@ -409,10 +439,10 @@ func _build_ui() -> void:
 	ui.add_child(header)
 	var header_box := VBoxContainer.new()
 	header.add_child(header_box)
-	_text(header_box, "S C A L E   S T U D Y   /   0 1", 12, Color("94c8bd"))
-	_text(header_box, "灰盒比例验证", 25)
+	_text(header_box, "D E L I V E R Y   /   0 4", 12, Color("94c8bd"))
+	_text(header_box, "这货谁送的？", 25)
 	_text(header_box, "1 单位 = 1 米  ·  Y 向上  ·  前向 -Z", 13)
-	_text(header_box, "客货大巴体量 / 半 Q 人物 / 2026-11-11", 12, Color("acbfbe"))
+	_text(header_box, "送货重构 · 比例与事件概念 · 2026-11-15", 12, Color("acbfbe"))
 	var panel := PanelContainer.new()
 	panel.name = "FactsPanel"
 	ui.add_child(panel)
@@ -431,11 +461,20 @@ func _build_ui() -> void:
 	box.add_theme_constant_override("separation", 8)
 	scroll.add_child(box)
 	view_label = _text(box, "", 19)
+	_button(box, "N  查看路线抉择草案", func(): route_map.visible = not route_map.visible)
 	_text(box, "人物与车辆", 13, Color("94c8bd"))
-	_text(box, "人物  高1.80 / 蹲高1.20 m · 约3头身\n完整视觉宽0.80 m / 碰撞 Ø0.60 m\n头径0.60 m · 眼高1.62 / 1.02 m\n车身  长8.80 × 宽4.30 × 高3.50 m\n后舱  净长5.80 × 净宽4.00 × 净高2.80 m\n地板离地0.70 m · 驾驶区约2.20 m\n隔断门0.80 × 1.90 m\n后门1.60 × 2.00 m\n正式游戏1～4人，五人仅为宽度样本", 13)
-	_text(box, "尺寸冲突待定\n0.70 + 2.80 = 3.50 m，无顶棚厚度余量\n屋顶使用零厚度参考面", 13, Color("efd396"))
-	_text(box, "六件货物", 13, Color("94c8bd"))
-	_text(box, "3 × 木箱   0.60 m 立方体\n2 × 圆桶   Ø0.60 × 高0.90 m\n1 × 重物   长1.00 × 宽0.80 × 高0.60 m", 13)
+	_text(box, "人物  高1.20 / 蹲高0.85 m · 1.5头身\n视觉宽0.96 m / 碰撞 Ø0.80 m\n头径0.80 m · 眼高1.02 / 0.70 m\n车身  长8.80 × 宽3.00 × 高3.50 m\n后舱  净长5.80 × 净宽2.70 × 净高2.68 m\n地板0.70 m · 实体顶棚0.12 m\n隔断门1.10 × 1.90 / 后门1.80 × 2.00 m", 13)
+	_text(box, "六件货物 / 各2件 / 总196 kg", 13, Color("94c8bd"))
+	_text(box, "鸡笼  .80 × .70 × .60 m / 18 kg\n鱼缸  .90 × .75 × .65 m / 35 kg\n炸弹  .65 m立方包络 / 45 kg\n尺寸按宽 × 高 × 长", 13)
+	_text(box, "突发事件概念演示", 13, Color("94c8bd"))
+	event_choice = OptionButton.new()
+	for title in EventPreview.NAMES:
+		event_choice.add_item(title)
+	event_choice.item_selected.connect(set_preview_event)
+	box.add_child(event_choice)
+	event_label = _text(box, EventPreview.NOTES[0], 12, Color("efd396"))
+	_button(box, "8  下一个事件  /  9  清除", func(): set_preview_event((event_preview.selected + 1) % EventPreview.NAMES.size()))
+	_text(box, "动画仅用于预览构图与辨识；订单、驾驶、事件反制和经营系统待实现。", 12, Color("acbfbe"))
 	var layouts := GridContainer.new()
 	layouts.columns = 2
 	box.add_child(layouts)
@@ -451,10 +490,10 @@ func _build_ui() -> void:
 	gate_button = _button(box, "T  后部装卸门  /  打开", toggle_gate)
 	partition_button = _button(box, "P  前后舱隔断门  /  打开", toggle_partition)
 	shell_button = _button(box, "O  外壳剖视  /  关闭", toggle_shell)
-	posture_button = _button(box, "C  人物 B  /  站姿 1.80 m", toggle_posture)
+	posture_button = _button(box, "C  人物 B  /  站姿 1.20 m", toggle_posture)
 	_button(box, "M  尺寸标记开关", toggle_rulers)
-	_text(box, "场地100 × 80 m · 装卸区各14 × 14 m\n直路30 m · 双向12 m / 单道6 m\n左右弯中线R20 m · 凸起0.12 m", 13)
-	_text(box, "构造占位\n轮距3.90 m / 轴距5.80 m / 轮半径0.35 m\n后斜板伸出2.10 m，板后至标线约1.00 m\n切向车身框用于静态转弯空间对照", 12, Color("acbfbe"))
+	_text(box, "场地100 × 80 m · 装卸区各14 × 14 m\n直路30 m · 总宽6 m / 单道3 m\n左右弯中线R20 m · 凸起0.12 m", 13)
+	_text(box, "构造占位\n轮距2.70 m / 轴距5.80 m / 轮半径0.35 m\n后斜板伸出2.10 m，板后至标线约1.00 m\n切向车身框用于静态转弯空间对照", 12, Color("acbfbe"))
 	var bottom := PanelContainer.new()
 	ui.add_child(bottom)
 	bottom.anchor_top = 1
@@ -475,7 +514,11 @@ func _build_ui() -> void:
 		button.add_theme_stylebox_override("hover", _compact_style(Color("476774")))
 		button.add_theme_stylebox_override("pressed", _compact_style(Color("177d78")))
 		view_buttons.append(button)
-	_text(controls, "右键环绕 / 眼高观察 · 滚轮缩放 · WASD 步行 · Shift 加速 · L 摆放 · P 隔断门 · T 后门 · O 剖视 · G 网格 · R 复位 · H 界面 · Esc 释放鼠标", 12, Color("acbfbe"))
+	_text(controls, "右键环绕 / 眼高观察 · 滚轮缩放 · WASD 步行 · Shift 加速 · L 摆放 · 8 事件 · 9 清除 · P 隔断门 · T 后门 · O 剖视 · G 网格 · R 复位 · H 界面 · Esc 释放鼠标", 12, Color("acbfbe"))
+
+	route_map = RouteMapPreview.new()
+	ui.add_child(route_map)
+	route_map.visible = false
 
 func _compact_style(color: Color) -> StyleBoxFlat:
 	var style := _panel_style(color)
