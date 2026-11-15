@@ -25,7 +25,7 @@ func _initialize() -> void:
 	_environment()
 	_site()
 	_truck()
-	_person("PersonA", Spec.person_position(0, 0), false, GOLD, PI / 2.0)
+	_person("PersonA", Spec.person_position(0, 0), false, GOLD, -PI / 2.0)
 	_person("PersonB", Spec.person_position(1, 0), false, TEAL, PI)
 	_person("PersonC", Spec.person_position(2, 0), false, BLUE, -PI / 2.0)
 	_person("PersonD", Spec.person_position(3, 0), false, HEAVY, PI / 2.0)
@@ -69,6 +69,8 @@ func _material(color: Color, unshaded := false) -> StandardMaterial3D:
 		material.albedo_color = color
 		material.roughness = 0.88
 		material.cull_mode = BaseMaterial3D.CULL_DISABLED
+		if color.a < 1.0:
+			material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 		if unshaded:
 			material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		materials[key] = material
@@ -195,7 +197,7 @@ func _site() -> void:
 	var half_road: float = Spec.ROAD_WIDTH / 2.0
 	var right_center := Vector3(-half_straight, 0, Spec.TURN_CENTER_RADIUS)
 	var left_center := -right_center
-	_box(route, "Straight_30x12", Vector3(Spec.STRAIGHT_LENGTH, 0.012, Spec.ROAD_WIDTH), Vector3(0, 0.006, 0), Color("525e65"))
+	_box(route, "Straight_30x6", Vector3(Spec.STRAIGHT_LENGTH, 0.012, Spec.ROAD_WIDTH), Vector3(0, 0.006, 0), Color("525e65"))
 	_road_curve(route, "RightTurn_R20", right_center, PI, 1.5 * PI)
 	_road_curve(route, "LeftTurn_R20", left_center, 0.5 * PI, 0.0)
 	for x in range(-14, 15, 3):
@@ -211,7 +213,7 @@ func _site() -> void:
 		reference.rotation.y = -lane * PI / 2.0
 		reference.set_meta("lane", lane)
 		_frame(reference, Vector3.ZERO, Spec.TRUCK_SIZE.x, Spec.TRUCK_SIZE.z, GOLD if lane > 0 else TEAL)
-	_label(route, "车身 %.1f × %.1f m / 单侧余宽 %.2f m" % [Spec.TRUCK_SIZE.z, Spec.TRUCK_SIZE.x, (Spec.LANE_WIDTH - Spec.TRUCK_SIZE.x) / 2.0], Vector3(0, 0.2, -half_road - 1.2), 0.005)
+	_label(route, "车身 %.1f × %.1f m / 单道等宽，无会车余量" % [Spec.TRUCK_SIZE.z, Spec.TRUCK_SIZE.x], Vector3(0, 0.2, -half_road - 1.2), 0.005)
 	for center in [right_center, left_center]:
 		for lane in [-1, 1]:
 			for i in 2:
@@ -320,7 +322,8 @@ func _truck() -> void:
 	truck.set_meta("outer_size_m", Spec.TRUCK_SIZE)
 	truck.set_meta("bed_inner_size_m", Spec.BED_SIZE)
 	truck.set_meta("bed_clear_height_m", Spec.BED_CLEAR_HEIGHT)
-	truck.set_meta("roof_thickness_conflict", true)
+	truck.set_meta("roof_thickness_conflict", false)
+	truck.set_meta("maximum_width_including_tires_m", Spec.TRACK + Spec.TIRE_WIDTH)
 	var width: float = Spec.TRUCK_SIZE.x
 	var length: float = Spec.TRUCK_SIZE.z
 	var wall_height: float = Spec.BED_CLEAR_HEIGHT
@@ -337,21 +340,11 @@ func _truck() -> void:
 		Vector3(0, wall_y, -length / 2.0 + Spec.WALL_THICKNESS / 2.0), BLUE, true)
 	_portal(geometry, "PartitionPortal", Spec.BED_SIZE.x, Spec.PARTITION_DOOR_SIZE, Spec.PARTITION_Z, METAL)
 	_portal(geometry, "RearPortal", width, Spec.REAR_DOOR_SIZE, length / 2.0 - Spec.WALL_THICKNESS / 2.0, BLUE)
-	# A zero-thickness reference preserves both supplied heights. A real roof needs a design change.
-	var roof := StaticBody3D.new()
-	roof.name = "RoofReference"
-	roof.position.y = Spec.TRUCK_SIZE.y
-	roof.set_meta("reference_thickness_m", 0.0)
-	geometry.add_child(roof)
-	var roof_mesh := PlaneMesh.new()
-	roof_mesh.size = Vector2(width, length)
-	_mesh(roof, "Mesh", roof_mesh, Vector3.ZERO, METAL)
-	var roof_collision := CollisionShape3D.new()
-	roof_collision.name = "Collision"
-	var roof_shape := roof_mesh.create_trimesh_shape()
-	roof_shape.backface_collision = true
-	roof_collision.shape = roof_shape
-	roof.add_child(roof_collision)
+	# Keep the historical path for inspection controls, now with a real 0.12 m roof.
+	var roof_thickness: float = Spec.TRUCK_SIZE.y - Spec.BED_FLOOR - Spec.BED_CLEAR_HEIGHT
+	var roof := _box(geometry, "RoofReference", Vector3(width, roof_thickness, length),
+		Vector3(0, Spec.TRUCK_SIZE.y - roof_thickness / 2.0, 0), METAL, true)
+	roof.set_meta("reference_thickness_m", roof_thickness)
 	_box(geometry, "DrivingArea", Vector3(Spec.BED_SIZE.x, 0.004, Spec.CABIN_LENGTH),
 		Vector3(0, Spec.BED_FLOOR + 0.003, (Spec.CABIN_FRONT + Spec.CABIN_REAR) / 2.0), GOLD)
 	for z in [Spec.FRONT_AXLE_Z, Spec.FRONT_AXLE_Z + Spec.WHEELBASE]:
@@ -382,7 +375,7 @@ func _truck() -> void:
 	var half_width := width / 2.0
 	var measure := _dimension(rulers, Vector3(half_width + 0.4, Spec.TRUCK_SIZE.y + 0.4, -half_length), Vector3(half_width + 0.4, Spec.TRUCK_SIZE.y + 0.4, half_length), "车长 %.2f m" % length)
 	measure.set_meta("views", [1])
-	measure = _dimension(rulers, Vector3(-half_width, 0.05, half_length + 0.8), Vector3(half_width, 0.05, half_length + 0.8), "车宽 4.30 m")
+	measure = _dimension(rulers, Vector3(-half_width, 0.05, half_length + 0.8), Vector3(half_width, 0.05, half_length + 0.8), "车宽 %.2f m" % width)
 	measure.set_meta("views", [2])
 	measure.set_meta("width_study", true)
 	measure = _dimension(rulers, Vector3(half_width + 0.3, 0, -half_length - 0.5), Vector3(half_width + 0.3, Spec.TRUCK_SIZE.y, -half_length - 0.5), "车高 %.2f m" % Spec.TRUCK_SIZE.y, Vector3(0.4, 0, 0))
@@ -390,19 +383,19 @@ func _truck() -> void:
 	measure = _dimension(rulers, Vector3(half_width + 0.4, Spec.BED_FLOOR, Spec.BED_FRONT),
 		Vector3(half_width + 0.4, Spec.BED_FLOOR, Spec.BED_REAR), "净长 %.2f m" % Spec.BED_SIZE.y, Vector3(0.6, 0.15, 0))
 	measure.set_meta("views", [3])
-	measure = _dimension(rulers, Vector3(-Spec.BED_SIZE.x / 2.0, Spec.TRUCK_SIZE.y + 0.5, half_length + 0.4), Vector3(Spec.BED_SIZE.x / 2.0, Spec.TRUCK_SIZE.y + 0.5, half_length + 0.4), "净宽 4.00 m")
+	measure = _dimension(rulers, Vector3(-Spec.BED_SIZE.x / 2.0, Spec.TRUCK_SIZE.y + 0.5, half_length + 0.4), Vector3(Spec.BED_SIZE.x / 2.0, Spec.TRUCK_SIZE.y + 0.5, half_length + 0.4), "净宽 %.2f m" % Spec.BED_SIZE.x)
 	measure.set_meta("views", [2, 3])
 	measure.set_meta("width_study", true)
 	measure = _dimension(rulers, Vector3(-half_width - 0.4, Spec.BED_FLOOR, half_length + 0.2),
-		Vector3(-half_width - 0.4, Spec.TRUCK_SIZE.y, half_length + 0.2), "净高 %.2f m" % Spec.BED_CLEAR_HEIGHT, Vector3(-0.5, 0, 0))
+		Vector3(-half_width - 0.4, Spec.BED_FLOOR + Spec.BED_CLEAR_HEIGHT, half_length + 0.2), "净高 %.2f m" % Spec.BED_CLEAR_HEIGHT, Vector3(-0.5, 0, 0))
 	measure.set_meta("views", [2])
 	measure = _dimension(rulers, Vector3(half_width + 0.4, 0, half_length + 0.2), Vector3(half_width + 0.4, Spec.BED_FLOOR, half_length + 0.2), "地板 0.70 m", Vector3(0.6, 0, 0))
 	measure.set_meta("views", [2])
-	measure = _dimension(rulers, Vector3(-0.4, Spec.BED_FLOOR + 0.02, Spec.PARTITION_Z),
-		Vector3(0.4, Spec.BED_FLOOR + 0.02, Spec.PARTITION_Z), "隔断门 0.80 m", Vector3(0, 0.2, -0.5))
+	measure = _dimension(rulers, Vector3(-Spec.PARTITION_DOOR_SIZE.x / 2.0, Spec.BED_FLOOR + 0.02, Spec.PARTITION_Z),
+		Vector3(Spec.PARTITION_DOOR_SIZE.x / 2.0, Spec.BED_FLOOR + 0.02, Spec.PARTITION_Z), "隔断门 %.2f m" % Spec.PARTITION_DOOR_SIZE.x, Vector3(0, 0.2, -0.5))
 	measure.set_meta("views", [3])
-	measure = _dimension(rulers, Vector3(-0.8, Spec.BED_FLOOR + 0.02, half_length + 0.2),
-		Vector3(0.8, Spec.BED_FLOOR + 0.02, half_length + 0.2), "后门 1.60 m", Vector3(0, 0.2, 0))
+	measure = _dimension(rulers, Vector3(-Spec.REAR_DOOR_SIZE.x / 2.0, Spec.BED_FLOOR + 0.02, half_length + 0.2),
+		Vector3(Spec.REAR_DOOR_SIZE.x / 2.0, Spec.BED_FLOOR + 0.02, half_length + 0.2), "后门 %.2f m" % Spec.REAR_DOOR_SIZE.x, Vector3(0, 0.2, 0))
 	measure.set_meta("views", [2])
 	measure = _dimension(rulers, Vector3(-0.9, Spec.BED_FLOOR, half_length + 0.2),
 		Vector3(-0.9, Spec.BED_FLOOR + Spec.REAR_DOOR_SIZE.y, half_length + 0.2), "后门净高 2.00 m", Vector3(-0.5, 0, 0))
@@ -413,8 +406,8 @@ func _truck() -> void:
 	var footprint := _group(rulers, "BedFootprint")
 	footprint.set_meta("views", [0, 3])
 	_frame(footprint, Vector3(0, Spec.BED_FLOOR + 0.01, Spec.BED_CENTER_Z), Spec.BED_SIZE.x, Spec.BED_SIZE.y, TEAL)
-	var row := _dimension(rulers, Vector3(-Spec.BED_SIZE.x / 2.0, Spec.BED_FLOOR + 0.02, Spec.BED_CENTER_Z + 0.9),
-		Vector3(Spec.BED_SIZE.x / 2.0, Spec.BED_FLOOR + 0.02, Spec.BED_CENTER_Z + 0.9), "5 × 0.80 = 4.00 m", Vector3(0, -0.3, 0.25))
+	var row := _dimension(rulers, Vector3(-1.5 * Spec.PERSON_VISUAL_WIDTH, Spec.BED_FLOOR + 0.02, Spec.BED_CENTER_Z + 0.9),
+		Vector3(1.5 * Spec.PERSON_VISUAL_WIDTH, Spec.BED_FLOOR + 0.02, Spec.BED_CENTER_Z + 0.9), "3 × %.2f = %.2f m > 净宽 %.2f m，无法并排" % [Spec.PERSON_VISUAL_WIDTH, 3.0 * Spec.PERSON_VISUAL_WIDTH, Spec.BED_SIZE.x], Vector3(0, -0.3, 0.25))
 	row.name = "FivePersonWidth"
 	row.set_meta("views", [0, 2, 3])
 	row.set_meta("width_study", true)
@@ -466,7 +459,10 @@ func _person(node_name: String, position: Vector3, crouched: bool, color: Color,
 	sphere.height = Spec.HEAD_DIAMETER
 	sphere.radial_segments = 16
 	sphere.rings = 8
-	_mesh(person, "Head", sphere, Vector3(0, profile.head_y, 0), WHITE)
+	var head := _mesh(person, "Head", sphere, Vector3(0, profile.head_y, 0), WHITE)
+	for side in [-1, 1]:
+		_sphere(head, "EyeLeft" if side < 0 else "EyeRight", 0.028, 0.056, Vector3(side * 0.14, 0.055, -0.365), TIRE)
+	_box(head, "Mouth", Vector3(0.085, 0.025, 0.02), Vector3(0, -0.09, -0.385), TIRE)
 	for side in [-1, 1]:
 		var suffix := "Left" if side < 0 else "Right"
 		var arm := CapsuleMesh.new()
@@ -512,10 +508,10 @@ func _person(node_name: String, position: Vector3, crouched: bool, color: Color,
 		height_measure.name = "HeightMeasure"
 		if node_name == "PersonA":
 			var visual_width := _dimension(rulers, Vector3(-Spec.PERSON_VISUAL_WIDTH / 2.0, 0.03, 0.5),
-				Vector3(Spec.PERSON_VISUAL_WIDTH / 2.0, 0.03, 0.5), "视觉宽 0.80 m", Vector3(0, -0.25, 0.25))
+				Vector3(Spec.PERSON_VISUAL_WIDTH / 2.0, 0.03, 0.5), "视觉宽 %.2f m" % Spec.PERSON_VISUAL_WIDTH, Vector3(0, -0.25, 0.25))
 			visual_width.name = "VisualWidthMeasure"
 			var collision_width := _dimension(rulers, Vector3(-Spec.PERSON_DIAMETER / 2.0, 0.03, -0.5),
-				Vector3(Spec.PERSON_DIAMETER / 2.0, 0.03, -0.5), "碰撞 Ø0.60 m", Vector3(0, -0.55, -0.25))
+				Vector3(Spec.PERSON_DIAMETER / 2.0, 0.03, -0.5), "碰撞 Ø%.2f m" % Spec.PERSON_DIAMETER, Vector3(0, -0.55, -0.25))
 			collision_width.name = "CollisionWidthMeasure"
 		var eye_measure := _group(rulers, "EyeMeasure", Vector3(0, eye, 0))
 		_line(eye_measure, Vector3(-0.27, 0, -0.2), Vector3(0.27, 0, -0.2), TEAL, 0.006)
@@ -540,22 +536,77 @@ func _cargo() -> void:
 		var collider := CollisionShape3D.new()
 		collider.name = "Collision"
 		collider.position.y = size.y / 2.0
-		if kind == "barrel":
-			_cylinder(body, "Geometry", size.x / 2.0, size.y, Vector3(0, size.y / 2.0, 0), BARREL)
-			var shape := CylinderShape3D.new()
-			shape.radius = size.x / 2.0
-			shape.height = size.y
-			collider.shape = shape
-		else:
-			_box(body, "Geometry", size, Vector3(0, size.y / 2.0, 0), BOX if kind == "box" else HEAVY)
-			var shape := BoxShape3D.new()
-			shape.size = size
-			collider.shape = shape
+		var shape := BoxShape3D.new()
+		shape.size = size
+		collider.shape = shape
 		body.add_child(collider)
-		var cargo_name: String = {"box": "木箱", "barrel": "圆桶", "heavy": "重物"}[kind]
-		var text: String = "%s · %s" % [Spec.CARGO_IDS[i], cargo_name]
+		var geometry := _group(body, "Geometry")
+		match kind:
+			"chicken_cage": _chicken_cage(geometry, size)
+			"fish_tank": _fish_tank(geometry, size)
+			"bomb": _bomb(geometry, size)
+		var cargo_name: String = {"chicken_cage": "鸡笼", "fish_tank": "鱼缸", "bomb": "炸弹"}[kind]
+		var text: String = "%s · %s · %.0f kg" % [Spec.CARGO_IDS[i], cargo_name, Spec.CARGO_MASSES[kind]]
 		var label := _label(body, text, Vector3(0, size.y + 0.18, 0), 0.0045)
 		label.name = "CargoLabel"
+
+func _sphere(parent: Node, node_name: String, radius: float, height: float, position: Vector3, color: Color) -> MeshInstance3D:
+	var mesh := SphereMesh.new()
+	mesh.radius = radius
+	mesh.height = height
+	mesh.radial_segments = 20
+	mesh.rings = 12
+	return _mesh(parent, node_name, mesh, position, color)
+
+func _chicken_cage(parent: Node, size: Vector3) -> void:
+	var frame_color := Color("dfb86c")
+	_box(parent, "CageBase", Vector3(size.x, 0.06, size.z), Vector3(0, 0.03, 0), BOX)
+	# Bars and a box frame keep the animal readable from all inspection angles.
+	for y in [0.07, size.y - 0.025]:
+		for z in [-size.z / 2.0 + 0.018, size.z / 2.0 - 0.018]:
+			_box(parent, "HorizontalBar", Vector3(size.x, 0.035, 0.035), Vector3(0, y, z), frame_color)
+		for x in [-size.x / 2.0 + 0.018, size.x / 2.0 - 0.018]:
+			_box(parent, "SideBar", Vector3(0.035, 0.035, size.z), Vector3(x, y, 0), frame_color)
+	for i in 7:
+		var x: float = lerpf(-size.x / 2.0 + 0.018, size.x / 2.0 - 0.018, i / 6.0)
+		for z in [-size.z / 2.0 + 0.018, size.z / 2.0 - 0.018]:
+			_box(parent, "CageBar", Vector3(0.025, size.y - 0.07, 0.025), Vector3(x, (size.y + 0.03) / 2.0, z), frame_color)
+	for x in [-size.x / 2.0 + 0.018, size.x / 2.0 - 0.018]:
+		_box(parent, "EndBar", Vector3(0.025, size.y - 0.07, 0.025), Vector3(x, (size.y + 0.03) / 2.0, 0), frame_color)
+	_sphere(parent, "ChickenBody", 0.17, 0.28, Vector3(0, 0.26, 0.02), WHITE)
+	_sphere(parent, "ChickenHead", 0.10, 0.20, Vector3(0, 0.43, -0.12), WHITE)
+	_box(parent, "Beak", Vector3(0.08, 0.04, 0.07), Vector3(0, 0.43, -0.23), GOLD)
+	_box(parent, "Comb", Vector3(0.06, 0.07, 0.035), Vector3(0, 0.55, -0.12), Color("da534b"))
+	for side in [-1, 1]:
+		_sphere(parent, "Eye", 0.015, 0.03, Vector3(side * 0.065, 0.455, -0.195), TIRE)
+		_box(parent, "ChickenFoot", Vector3(0.04, 0.06, 0.07), Vector3(side * 0.065, 0.10, 0.01), GOLD)
+
+func _fish_tank(parent: Node, size: Vector3) -> void:
+	var frame_color := Color("355a70")
+	_box(parent, "TankBase", Vector3(size.x, 0.055, size.z), Vector3(0, 0.0275, 0), frame_color)
+	# Transparent envelope and a separate lower water volume show the fragile cargo.
+	_box(parent, "Glass", Vector3(size.x, size.y - 0.055, size.z), Vector3(0, (size.y + 0.055) / 2.0, 0), Color(0.5, 0.85, 0.95, 0.13))
+	_box(parent, "Water", Vector3(size.x - 0.05, 0.42, size.z - 0.05), Vector3(0, 0.27, 0), Color(0.12, 0.62, 0.85, 0.24))
+	for x in [-size.x / 2.0 + 0.0125, size.x / 2.0 - 0.0125]:
+		for z in [-size.z / 2.0 + 0.0125, size.z / 2.0 - 0.0125]:
+			_box(parent, "GlassCorner", Vector3(0.025, size.y, 0.025), Vector3(x, size.y / 2.0, z), frame_color)
+	for z in [-size.z / 2.0 + 0.0125, size.z / 2.0 - 0.0125]:
+		_box(parent, "TankTopRim", Vector3(size.x, 0.025, 0.025), Vector3(0, size.y - 0.0125, z), frame_color)
+	for x in [-size.x / 2.0 + 0.0125, size.x / 2.0 - 0.0125]:
+		_box(parent, "TankSideRim", Vector3(0.025, 0.025, size.z), Vector3(x, size.y - 0.0125, 0), frame_color)
+	_sphere(parent, "FishBody", 0.13, 0.16, Vector3(-0.03, 0.30, 0), Color("f09e3b"))
+	var tail := _box(parent, "FishTail", Vector3(0.11, 0.11, 0.04), Vector3(0.135, 0.30, 0), GOLD)
+	tail.rotation.z = PI / 4.0
+	_sphere(parent, "FishEye", 0.018, 0.036, Vector3(-0.10, 0.32, -0.10), TIRE)
+
+func _bomb(parent: Node, size: Vector3) -> void:
+	# A marked cradle gives a stable 0.65 m footprint; the fuse fits inside the same height.
+	_box(parent, "Cradle", Vector3(size.x, 0.07, size.z), Vector3(0, 0.035, 0), Color("a85d48"))
+	_sphere(parent, "BombBody", 0.255, 0.51, Vector3(0, 0.325, 0), TIRE)
+	_cylinder(parent, "FuseSocket", 0.05, 0.055, Vector3(0, 0.5875, 0), METAL)
+	_line(parent, Vector3(0, 0.605, 0), Vector3(0.07, 0.635, 0.03), GOLD, 0.013)
+	_box(parent, "WarningStripe", Vector3(0.29, 0.045, 0.016), Vector3(0, 0.04, -size.z / 2.0 + 0.008), GOLD)
+	_box(parent, "FuseEmber", Vector3(0.025, 0.025, 0.025), Vector3(0.07, 0.6375, 0.03), Color("ef7854"))
 
 func _observer() -> void:
 	var camera := Camera3D.new()
@@ -572,11 +623,11 @@ func _observer() -> void:
 	observer.collision_mask = 1
 	observer.floor_snap_length = 0.15
 	var shape := CapsuleShape3D.new()
-	shape.radius = 0.3
-	shape.height = 1.8
+	shape.radius = Spec.PERSON_DIAMETER / 2.0
+	shape.height = Spec.PERSON_HEIGHT
 	var collider := CollisionShape3D.new()
 	collider.name = "Collision"
 	collider.shape = shape
-	collider.position.y = 0.9
+	collider.position.y = Spec.PERSON_HEIGHT / 2.0
 	observer.add_child(collider)
 	scene.add_child(observer)
